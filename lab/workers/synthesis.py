@@ -17,8 +17,13 @@ Gọi độc lập để test:
 """
 
 import os
+from dotenv import load_dotenv
+from dotenv import dotenv_values
 
 WORKER_NAME = "synthesis_worker"
+LAB_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+ENV_PATH = os.path.join(LAB_ROOT, ".env")
+load_dotenv(dotenv_path=ENV_PATH)
 
 SYSTEM_PROMPT = """Bạn là trợ lý IT Helpdesk nội bộ.
 
@@ -31,22 +36,39 @@ Quy tắc nghiêm ngặt:
 """
 
 
-def _call_llm(messages: list) -> str:
+def _call_llm(messages: list) -> tuple[str, str]:
     """
     Gọi LLM để tổng hợp câu trả lời.
     TODO Sprint 2: Implement với OpenAI hoặc Gemini.
     """
-    # Option A: OpenAI
+    openai_last_error = ""
+
+    # Option A: OpenAI (primary)
     try:
         from openai import OpenAI
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,
-            temperature=0.1,  # Low temperature để grounded
-            max_tokens=500,
-        )
-        return response.choices[0].message.content
+        openai_key = os.getenv("OPENAI_API_KEY") or dotenv_values(ENV_PATH).get("OPENAI_API_KEY", "")
+        openai_key = (openai_key or "").strip().strip('"').strip("'")
+        if openai_key:
+            model_candidates = [
+                os.getenv("OPENAI_MODEL", "").strip(),
+                "gpt-4o",
+                "gpt-4o-mini",
+                "gpt-4.1-mini",
+            ]
+            model_candidates = [m for m in model_candidates if m]
+            client = OpenAI(api_key=openai_key)
+            for model_name in model_candidates:
+                try:
+                    response = client.chat.completions.create(
+                        model=model_name,
+                        messages=messages,
+                        temperature=0.1,  # Low temperature để grounded
+                        max_tokens=500,
+                    )
+                    return response.choices[0].message.content, f"openai:{model_name}"
+                except Exception as e:
+                    openai_last_error = f"{type(e).__name__}: {str(e)[:140]}"
+                    continue
     except Exception:
         pass
 
@@ -57,12 +79,14 @@ def _call_llm(messages: list) -> str:
         model = genai.GenerativeModel("gemini-1.5-flash")
         combined = "\n".join([m["content"] for m in messages])
         response = model.generate_content(combined)
-        return response.text
+        return response.text, "gemini:gemini-1.5-flash"
     except Exception:
         pass
 
     # Fallback: trả về message báo lỗi (không hallucinate)
-    return "[SYNTHESIS ERROR] Không thể gọi LLM. Kiểm tra API key trong .env."
+    if openai_last_error:
+        return f"[SYNTHESIS ERROR] OpenAI call failed. {openai_last_error}", "none"
+    return "[SYNTHESIS ERROR] Không thể gọi LLM. Kiểm tra OPENAI_API_KEY trong .env.", "none"
 
 
 def _build_context(chunks: list, policy_result: dict) -> str:
@@ -88,6 +112,21 @@ def _build_context(chunks: list, policy_result: dict) -> str:
     return "\n\n".join(parts)
 
 
+def _ensure_citations(answer: str, sources: list) -> str:
+    """
+    Đảm bảo answer có citation khi có evidence.
+    Nếu model quên cite, thêm block nguồn ở cuối câu trả lời.
+    """
+    if not sources:
+        return answer
+    if answer.startswith("[SYNTHESIS ERROR]"):
+        return answer
+    if "[" in answer and "]" in answer:
+        return answer
+    citation_tail = " ".join([f"[{s}]" for s in sources])
+    return f"{answer}\n\nNguồn: {citation_tail}"
+
+
 def _estimate_confidence(chunks: list, answer: str, policy_result: dict) -> float:
     """
     Ước tính confidence dựa vào:
@@ -100,20 +139,30 @@ def _estimate_confidence(chunks: list, answer: str, policy_result: dict) -> floa
     if not chunks:
         return 0.1  # Không có evidence → low confidence
 
+    if answer.startswith("[SYNTHESIS ERROR]"):
+        return 0.15
+
     if "Không đủ thông tin" in answer or "không có trong tài liệu" in answer.lower():
         return 0.3  # Abstain → moderate-low
 
-    # Weighted average của chunk scores
-    if chunks:
-        avg_score = sum(c.get("score", 0) for c in chunks) / len(chunks)
-    else:
-        avg_score = 0
+    avg_score = sum(c.get("score", 0) for c in chunks) / len(chunks)
+    chunk_coverage = min(len(chunks), 4) / 4  # 0..1
+    unique_sources = len({c.get("source") for c in chunks if c.get("source")})
+    source_diversity = min(unique_sources, 3) / 3  # 0..1
 
-    # Penalty nếu có exceptions (phức tạp hơn)
-    exception_penalty = 0.05 * len(policy_result.get("exceptions_found", []))
+    # Base score thiên về evidence quality + coverage
+    base = 0.25 + (0.45 * avg_score) + (0.2 * chunk_coverage) + (0.1 * source_diversity)
 
-    confidence = min(0.95, avg_score - exception_penalty)
-    return round(max(0.1, confidence), 2)
+    # Penalize nếu có exception nhưng câu trả lời không phản ánh rõ
+    exceptions = policy_result.get("exceptions_found", [])
+    if exceptions:
+        answer_lower = answer.lower()
+        mentions_exception = any(
+            kw in answer_lower for kw in ["ngoại lệ", "exception", "không được", "không thể", "không hoàn tiền"]
+        )
+        base -= 0.03 if mentions_exception else 0.1
+
+    return round(max(0.1, min(0.95, base)), 2)
 
 
 def synthesize(task: str, chunks: list, policy_result: dict) -> dict:
@@ -123,6 +172,16 @@ def synthesize(task: str, chunks: list, policy_result: dict) -> dict:
     Returns:
         {"answer": str, "sources": list, "confidence": float}
     """
+    # Contract guard: không có evidence thì phải abstain, không gọi LLM để tránh hallucination
+    if not chunks:
+        abstain = "Không đủ thông tin trong tài liệu nội bộ để trả lời chính xác câu hỏi này."
+        return {
+            "answer": abstain,
+            "sources": [],
+            "confidence": 0.1,
+            "llm_provider": "none",
+        }
+
     context = _build_context(chunks, policy_result)
 
     # Build messages
@@ -138,14 +197,20 @@ Hãy trả lời câu hỏi dựa vào tài liệu trên."""
         }
     ]
 
-    answer = _call_llm(messages)
-    sources = list({c.get("source", "unknown") for c in chunks})
+    answer, llm_provider = _call_llm(messages)
+    sources = list({
+        c.get("source")
+        for c in chunks
+        if c.get("source") and c.get("source") != "unknown"
+    })
+    answer = _ensure_citations(answer, sources)
     confidence = _estimate_confidence(chunks, answer, policy_result)
 
     return {
         "answer": answer,
         "sources": sources,
         "confidence": confidence,
+        "llm_provider": llm_provider,
     }
 
 
@@ -177,21 +242,26 @@ def run(state: dict) -> dict:
         state["final_answer"] = result["answer"]
         state["sources"] = result["sources"]
         state["confidence"] = result["confidence"]
+        state["llm_provider"] = result.get("llm_provider", "unknown")
+        state["hitl_triggered"] = result["confidence"] < 0.4
 
         worker_io["output"] = {
             "answer_length": len(result["answer"]),
             "sources": result["sources"],
             "confidence": result["confidence"],
+            "llm_provider": state["llm_provider"],
+            "hitl_triggered": state["hitl_triggered"],
         }
         state["history"].append(
             f"[{WORKER_NAME}] answer generated, confidence={result['confidence']}, "
-            f"sources={result['sources']}"
+            f"llm={state['llm_provider']}, sources={result['sources']}"
         )
 
     except Exception as e:
         worker_io["error"] = {"code": "SYNTHESIS_FAILED", "reason": str(e)}
         state["final_answer"] = f"SYNTHESIS_ERROR: {e}"
         state["confidence"] = 0.0
+        state["hitl_triggered"] = True
         state["history"].append(f"[{WORKER_NAME}] ERROR: {e}")
 
     state.setdefault("worker_io_logs", []).append(worker_io)

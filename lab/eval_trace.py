@@ -185,7 +185,7 @@ def analyze_traces(traces_dir: str = "artifacts/traces") -> dict:
 
     traces = []
     for fname in trace_files:
-        with open(os.path.join(traces_dir, fname)) as f:
+        with open(os.path.join(traces_dir, fname), encoding="utf-8") as f:
             traces.append(json.load(f))
 
     # Compute metrics
@@ -260,7 +260,7 @@ def compare_single_vs_multi(
     }
 
     if day08_results_file and os.path.exists(day08_results_file):
-        with open(day08_results_file) as f:
+        with open(day08_results_file, encoding="utf-8") as f:
             day08_baseline = json.load(f)
 
     comparison = {
@@ -300,7 +300,7 @@ def print_metrics(metrics: dict):
     """Print metrics đẹp."""
     if not metrics:
         return
-    print("\n📊 Trace Analysis:")
+    print("\n[Trace Analysis]")
     for k, v in metrics.items():
         if isinstance(v, list):
             print(f"  {k}:")
@@ -319,6 +319,12 @@ if __name__ == "__main__":
     parser.add_argument("--grading", action="store_true", help="Run grading questions")
     parser.add_argument("--analyze", action="store_true", help="Analyze existing traces")
     parser.add_argument("--compare", action="store_true", help="Compare single vs multi")
+    parser.add_argument(
+        "--suite",
+        choices=["public", "private"],
+        default="public",
+        help="Quick select test suite file (default: public)",
+    )
     parser.add_argument("--test-file", default="data/test_questions.json", help="Test questions file")
     args = parser.parse_args()
 
@@ -344,8 +350,12 @@ if __name__ == "__main__":
             print(f"  {k}: {v}")
 
     else:
+        # Resolve test file: explicit --test-file ưu tiên cao nhất
+        suite_file = "data/test_questions.json" if args.suite == "public" else "data/grading_questions.json"
+        test_file = args.test_file if args.test_file != "data/test_questions.json" else suite_file
+
         # Default: chạy test questions
-        results = run_test_questions(args.test_file)
+        results = run_test_questions(test_file)
 
         # Phân tích trace
         metrics = analyze_traces()

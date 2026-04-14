@@ -17,6 +17,7 @@ Gọi độc lập để test:
 
 import os
 import sys
+import re
 
 # ─────────────────────────────────────────────
 # Worker Contract (xem contracts/worker_contracts.yaml)
@@ -81,6 +82,59 @@ def _get_collection():
     return collection
 
 
+def _tokenize(text: str) -> set:
+    """Tokenize đơn giản để tính overlap query-chunk."""
+    tokens = re.findall(r"[a-zA-Z0-9_]+", (text or "").lower())
+    stopwords = {
+        "la", "va", "the", "cho", "voi", "mot", "nhung", "duoc", "trong",
+        "is", "the", "a", "an", "and", "or", "to", "of", "for", "in",
+    }
+    return {t for t in tokens if len(t) > 2 and t not in stopwords}
+
+
+def _rerank_and_filter(chunks: list, query: str, top_k: int) -> list:
+    """
+    Rerank nhẹ theo lexical overlap và lọc chunk nhiễu.
+    Giữ đúng tinh thần lab: grounded, không bịa dữ liệu.
+    """
+    if not chunks:
+        return []
+
+    query_tokens = _tokenize(query)
+    scored = []
+    for chunk in chunks:
+        text_tokens = _tokenize(chunk.get("text", ""))
+        overlap = len(query_tokens.intersection(text_tokens))
+        overlap_ratio = overlap / max(1, len(query_tokens))
+        base_score = float(chunk.get("score", 0.0))
+
+        # Rerank score: ưu tiên relevance gốc, cộng nhẹ overlap lexical
+        rerank_score = (0.8 * base_score) + (0.2 * overlap_ratio)
+
+        metadata = dict(chunk.get("metadata", {}))
+        metadata["overlap_count"] = overlap
+        metadata["overlap_ratio"] = round(overlap_ratio, 4)
+        metadata["rerank_score"] = round(rerank_score, 4)
+        chunk["metadata"] = metadata
+        scored.append((rerank_score, overlap, chunk))
+
+    scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+
+    # Lọc nhiễu: giữ chunk nếu score đủ tốt hoặc có overlap trực tiếp
+    filtered = []
+    for rerank_score, overlap, chunk in scored:
+        if rerank_score >= 0.35 or overlap >= 1:
+            filtered.append(chunk)
+        if len(filtered) >= top_k:
+            break
+
+    # Fallback: nếu lọc quá gắt và mất hết, giữ top 1 theo rerank
+    if not filtered and scored:
+        filtered = [scored[0][2]]
+
+    return filtered
+
+
 def retrieve_dense(query: str, top_k: int = DEFAULT_TOP_K) -> list:
     """
     Dense retrieval: embed query → query ChromaDB → trả về top_k chunks.
@@ -99,9 +153,10 @@ def retrieve_dense(query: str, top_k: int = DEFAULT_TOP_K) -> list:
 
     try:
         collection = _get_collection()
+        candidate_k = max(top_k * 2, top_k + 2)
         results = collection.query(
             query_embeddings=[query_embedding],
-            n_results=top_k,
+            n_results=candidate_k,
             include=["documents", "distances", "metadatas"]
         )
 
@@ -111,13 +166,21 @@ def retrieve_dense(query: str, top_k: int = DEFAULT_TOP_K) -> list:
             results["distances"][0],
             results["metadatas"][0]
         )):
+            raw_distance = float(dist)
+            # Map cosine distance [0, 2] -> similarity-like score [0, 1]
+            raw_score = 1.0 - (raw_distance / 2.0)
+            score = max(0.0, min(1.0, raw_score))
+            metadata = dict(meta or {})
+            metadata["raw_distance"] = round(raw_distance, 6)
+            metadata["raw_score"] = round(raw_score, 6)
+            metadata["score_mapping"] = "score = clamp(1 - distance/2, 0, 1)"
             chunks.append({
                 "text": doc,
-                "source": meta.get("source", "unknown"),
-                "score": round(1 - dist, 4),  # cosine similarity
-                "metadata": meta,
+                "source": metadata.get("source", "unknown"),
+                "score": round(score, 4),
+                "metadata": metadata,
             })
-        return chunks
+        return _rerank_and_filter(chunks, query=query, top_k=top_k)
 
     except Exception as e:
         print(f"⚠️  ChromaDB query failed: {e}")
