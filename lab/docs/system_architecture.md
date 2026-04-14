@@ -12,8 +12,7 @@
 
 **Pattern đã chọn:** Supervisor-Worker  
 **Lý do chọn pattern này (thay vì single agent):**
-
-_________________
+Kiến trúc Supervisor-Worker cho phép phân rã một tác vụ phức tạp (vừa tìm thông tin, vừa kiểm tra chính sách, vừa gọi công cụ bên ngoài) thành các đơn vị xử lý độc lập. Điều này giúp nâng cao độ chính xác của từng worker và cung cấp khả năng quan sát (observability) tuyệt vời qua logic routing rõ ràng.
 
 ---
 
@@ -51,8 +50,18 @@ Retrieval Worker     Policy Tool Worker
 
 **Sơ đồ thực tế của nhóm:**
 
-```
-[NHÓM ĐIỀN VÀO ĐÂY]
+```mermaid
+graph TD
+    User([User Request]) --> Supervisor{Supervisor Agent}
+    Supervisor -->|Route: retrieval| RW[Retrieval Worker]
+    Supervisor -->|Route: policy_tool| PTW[Policy Tool Worker]
+    Supervisor -->|Route: human_review| HR[Human Review Node]
+    
+    HR --> RW
+    PTW --> MCP[MCP Server Tools]
+    RW --> SW[Synthesis Worker]
+    PTW --> SW
+    SW --> Output([Final Answer + Cites])
 ```
 
 ---
@@ -63,46 +72,45 @@ Retrieval Worker     Policy Tool Worker
 
 | Thuộc tính | Mô tả |
 |-----------|-------|
-| **Nhiệm vụ** | ___________________ |
-| **Input** | ___________________ |
+| **Nhiệm vụ** | Phân tích ý định người dùng và điều hướng đến worker phù hợp. |
+| **Input** | `task` (câu hỏi thô) |
 | **Output** | supervisor_route, route_reason, risk_high, needs_tool |
-| **Routing logic** | ___________________ |
-| **HITL condition** | ___________________ |
+| **Routing logic** | Keyword matching kết hợp kiểm tra rủi ro (risk matching). |
+| **HITL condition** | Trigger khi phát hiện mã lỗi không xác định hoặc yêu cầu đặc biệt nhạy cảm. |
 
 ### Retrieval Worker (`workers/retrieval.py`)
 
 | Thuộc tính | Mô tả |
 |-----------|-------|
-| **Nhiệm vụ** | ___________________ |
-| **Embedding model** | ___________________ |
-| **Top-k** | ___________________ |
-| **Stateless?** | Yes / No |
+| **Nhiệm vụ** | Tìm kiếm và trích xuất các đoạn văn bản (chunks) liên quan từ vector DB. |
+| **Embedding model** | OpenAI `text-embedding-3-small` |
+| **Top-k** | Động (3 hoặc 4) dựa trên chỉ dẫn của Supervisor. |
+| **Stateless?** | Yes |
 
 ### Policy Tool Worker (`workers/policy_tool.py`)
 
 | Thuộc tính | Mô tả |
 |-----------|-------|
-| **Nhiệm vụ** | ___________________ |
-| **MCP tools gọi** | ___________________ |
-| **Exception cases xử lý** | ___________________ |
+| **Nhiệm vụ** | Kiểm tra các điều kiện chính sách và gọi tool bên ngoài để xác thực dữ liệu. |
+| **MCP tools gọi** | `get_ticket_info`, `check_access_permission` |
+| **Exception cases xử lý** | Các trường hợp ngoại lệ trong chính sách hoàn tiền/truy cập. |
 
 ### Synthesis Worker (`workers/synthesis.py`)
 
 | Thuộc tính | Mô tả |
 |-----------|-------|
-| **LLM model** | ___________________ |
-| **Temperature** | ___________________ |
-| **Grounding strategy** | ___________________ |
-| **Abstain condition** | ___________________ |
+| **LLM model** | OpenAI `gpt-4o` |
+| **Temperature** | 0.0 (để đảm bảo tính ổn định và grounding) |
+| **Grounding strategy** | Chỉ trả lời dựa trên `retrieved_chunks` và `policy_result`. |
+| **Abstain condition** | Khi không có evidence hoặc confidence thấp hơn ngưỡng 0.4. |
 
 ### MCP Server (`mcp_server.py`)
 
 | Tool | Input | Output |
 |------|-------|--------|
 | search_kb | query, top_k | chunks, sources |
-| get_ticket_info | ticket_id | ticket details |
-| check_access_permission | access_level, requester_role | can_grant, approvers |
-| ___________________ | ___________________ | ___________________ |
+| get_ticket_info | ticket_id | ticket details (P1 status, assignee, etc) |
+| check_access_permission | access_level, requester_role | can_grant, approvers, emergency_override |
 
 ---
 
@@ -119,8 +127,8 @@ Retrieval Worker     Policy Tool Worker
 | policy_result | dict | Kết quả kiểm tra policy | policy_tool ghi, synthesis đọc |
 | mcp_tools_used | list | Tool calls đã thực hiện | policy_tool ghi |
 | final_answer | str | Câu trả lời cuối | synthesis ghi |
-| confidence | float | Mức tin cậy | synthesis ghi |
-| ___________________ | ___________________ | ___________________ | ___________________ |
+| confidence | float | Mức tin cậy (0-1) | synthesis ghi |
+| history | list | Nhật ký các bước xử lý | Tất cả workers ghi |
 
 ---
 
@@ -131,11 +139,10 @@ Retrieval Worker     Policy Tool Worker
 | Debug khi sai | Khó — không rõ lỗi ở đâu | Dễ hơn — test từng worker độc lập |
 | Thêm capability mới | Phải sửa toàn prompt | Thêm worker/MCP tool riêng |
 | Routing visibility | Không có | Có route_reason trong trace |
-| ___________________ | ___________________ | ___________________ |
+| Khả năng mở rộng | Kém (phải sửa core prompt) | Tốt (chỉ cần thêm worker mới) |
 
 **Nhóm điền thêm quan sát từ thực tế lab:**
-
-_________________
+Kiến trúc này giúp cô lập lỗi rất tốt. Khi synthesis trả lời sai, chúng ta có thể kiểm tra ngay xem do Retrieval lấy thiếu chunk hay do Policy phân tích logic sai.
 
 ---
 
@@ -143,6 +150,6 @@ _________________
 
 > Nhóm mô tả những điểm hạn chế của kiến trúc hiện tại.
 
-1. ___________________
-2. ___________________
-3. ___________________
+1. **Độ trễ (Latency)**: Việc chạy tuần tự qua nhiều agent làm tăng thời gian phản hồi.
+2. **Chi phí (Cost)**: Mỗi câu hỏi tốn ít nhất 2-3 LLM calls thay vì 1.
+3. **Sự phụ thuộc vào Keyword**: Router rule-based có thể thất bại với các câu hỏi có ngữ nghĩa phức tạp nhưng không chứa từ khóa định danh.
