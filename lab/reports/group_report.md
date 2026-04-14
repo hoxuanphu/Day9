@@ -4,7 +4,7 @@
 **Thành viên:**
 | Tên | Vai trò | Email |
 |-----|---------|-------|
-| ___ | Supervisor Owner | ___ |
+| Hồ Xuân Phú | Supervisor Owner | hoxuanphu.stmn@gmail.com |
 | Đào Danh Đăng Phụng | Worker Owner | phung352100@gmail.com |
 | ___ | MCP Owner | ___ |
 | ___ | Trace & Docs Owner | ___ |
@@ -148,7 +148,7 @@ Với câu hỏi đơn giản chỉ cần một fact, multi-agent có overhead r
 
 | Thành viên | Phần đã làm | Sprint |
 |------------|-------------|--------|
-| ___ | ___________________ | ___ |
+| Hồ Xuân Phú | Supervisor Owner: thiết lập AgentState, supervisor_node, route_decision, kết nối graph cơ bản. | 1 |
 | Đào Danh Đăng Phụng | Worker Owner: chỉnh `retrieval.py`, `policy_tool.py`, `synthesis.py`; chuẩn hóa score, thêm rerank/filter, MCP call logic, abstain/citation/HITL | 2, 3 |
 | ___ | ___________________ | ___ |
 | ___ | ___________________ | ___ |
