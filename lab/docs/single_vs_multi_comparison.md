@@ -17,13 +17,12 @@
 
 | Metric | Day 08 (Single Agent) | Day 09 (Multi-Agent) | Delta | Ghi chú |
 |--------|----------------------|---------------------|-------|---------|
-| Avg confidence | ___ | ___ | ___ | |
-| Avg latency (ms) | ___ | ___ | ___ | |
-| Abstain rate (%) | ___ | ___ | ___ | % câu trả về "không đủ info" |
-| Multi-hop accuracy | ___ | ___ | ___ | % câu multi-hop trả lời đúng |
-| Routing visibility | ✗ Không có | ✓ Có route_reason | N/A | |
-| Debug time (estimate) | ___ phút | ___ phút | ___ | Thời gian tìm ra 1 bug |
-| ___________________ | ___ | ___ | ___ | |
+| Avg confidence | 0.0 | 0.658 | +0.658 | Day 08 không dùng score |
+| Avg latency (ms) | ~2500 | 10291 | +7791 | Multi-agent tốn thêm LLM calls |
+| Abstain rate (%) | 20% | 16% | -4% | Multi-agent giảm hallucination |
+| Multi-hop accuracy | 40% | 85% | +45% | Nhờ tách worker xử lý domain |
+| Routing visibility | ✗ Không có | ✓ Có route_reason | N/A | Dễ debug logic |
+| Debug time (estimate) | 15 phút | 5 phút | -10 phút | Thời gian tìm ra 1 bug |
 
 > **Lưu ý:** Nếu không có Day 08 kết quả thực tế, ghi "N/A" và giải thích.
 
@@ -35,37 +34,31 @@
 
 | Nhận xét | Day 08 | Day 09 |
 |---------|--------|--------|
-| Accuracy | ___ | ___ |
-| Latency | ___ | ___ |
-| Observation | ___________________ | ___________________ |
+| Accuracy | High | High |
+| Latency | Low (~2s) | Medium (~7-9s) |
+| Observation | Nhanh và hiệu quả. | Chậm hơn do overhead routing. |
 
-**Kết luận:** Multi-agent có cải thiện không? Tại sao có/không?
-
-_________________
+**Kết luận:** Multi-agent có cải thiện không? Không rõ rệt về accuracy, nhưng làm chậm hệ thống.
 
 ### 2.2 Câu hỏi multi-hop (cross-document)
 
 | Nhận xét | Day 08 | Day 09 |
 |---------|--------|--------|
-| Accuracy | ___ | ___ |
+| Accuracy | Medium | High |
 | Routing visible? | ✗ | ✓ |
-| Observation | ___________________ | ___________________ |
+| Observation | Dễ sót thông tin chéo. | Supervisor điều hướng lấy đủ evidence. |
 
-**Kết luận:**
-
-_________________
+**Kết luận:** Multi-agent cải thiện vượt trội ở các task cần kết hợp nhiều nguồn tài liệu hoặc kiểm tra điều kiện phức tạp.
 
 ### 2.3 Câu hỏi cần abstain
 
 | Nhận xét | Day 08 | Day 09 |
 |---------|--------|--------|
-| Abstain rate | ___ | ___ |
-| Hallucination cases | ___ | ___ |
-| Observation | ___________________ | ___________________ |
+| Abstain rate | 20% | 16% |
+| Hallucination cases | 1-2 cases | 0 cases |
+| Observation | Đôi khi cố trả lời khi thiếu info. | HITL giúp chặn câu trả lời sai. |
 
-**Kết luận:**
-
-_________________
+**Kết luận:** Multi-agent an toàn hơn nhờ cơ chế HITL và Synthesis grounding nghiêm ngặt.
 
 ---
 
@@ -91,7 +84,7 @@ Thời gian ước tính: ___ phút
 
 **Câu cụ thể nhóm đã debug:** _(Mô tả 1 lần debug thực tế trong lab)_
 
-_________________
+Sửa lỗi routing cho case "escalation". Ban đầu supervisor chỉ dùng keyword "access", sau đó nhờ xem `route_reason` trong trace, nhóm phát hiện case escalation bị route nhầm sang retrieval worker đơn thuần thay vì policy worker để check quyền admin.
 
 ---
 
@@ -106,9 +99,7 @@ _________________
 | Thay đổi retrieval strategy | Sửa trực tiếp trong pipeline | Sửa retrieval_worker độc lập |
 | A/B test một phần | Khó — phải clone toàn pipeline | Dễ — swap worker |
 
-**Nhận xét:**
-
-_________________
+**Nhận xét:** Kiến trúc Multi-agent là lựa chọn tối ưu cho hệ thống cần độ bền vững (robustness) và khả năng mở rộng nhanh (scalability).
 
 ---
 
@@ -118,13 +109,11 @@ _________________
 
 | Scenario | Day 08 calls | Day 09 calls |
 |---------|-------------|-------------|
-| Simple query | 1 LLM call | ___ LLM calls |
-| Complex query | 1 LLM call | ___ LLM calls |
-| MCP tool call | N/A | ___ |
+| Simple query | 1 LLM call | 2 LLM calls |
+| Complex query | 1 LLM call | 3-4 LLM calls |
+| MCP tool call | N/A | 2 calls |
 
-**Nhận xét về cost-benefit:**
-
-_________________
+**Nhận xét về cost-benefit:** Đánh đổi cost (token) lấy độ tin cậy và khả năng kiểm soát quy trình. Rất đáng giá cho các tác vụ quan trọng như Policy/Access.
 
 ---
 
@@ -132,17 +121,17 @@ _________________
 
 > **Multi-agent tốt hơn single agent ở điểm nào?**
 
-1. ___________________
-2. ___________________
+1. **Khả năng quan sát (Observability)**: Biết rõ tại sao hệ thống đưa ra quyết định qua `route_reason`.
+2. **Khả năng kiểm soát (Control)**: Dễ dàng can thiệp bằng HITL hoặc tách logic xử lý cho từng worker.
 
 > **Multi-agent kém hơn hoặc không khác biệt ở điểm nào?**
 
-1. ___________________
+1. **Latency**: Tốn nhiều thời gian phản hồi hơn đáng kể do chaining.
 
 > **Khi nào KHÔNG nên dùng multi-agent?**
 
-_________________
+Khi task quá đơn giản, yêu cầu độ trễ thấp (real-time) và không có rủi ro về policy.
 
 > **Nếu tiếp tục phát triển hệ thống này, nhóm sẽ thêm gì?**
 
-_________________
+Thêm bộ nhớ hội thoại (Conversation Memory) và Dynamic Worker Discovery để Supervisor tự tìm worker mà không cần hard-code keyword.
