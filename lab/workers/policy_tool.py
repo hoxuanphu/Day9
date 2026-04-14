@@ -79,12 +79,17 @@ def analyze_policy(task: str, chunks: list) -> dict:
     """
     task_lower = task.lower()
     context_text = " ".join([c.get("text", "") for c in chunks]).lower()
+    combined_text = f"{task_lower} {context_text}"
 
     # --- Rule-based exception detection ---
+    is_refund_case = any(
+        kw in task_lower
+        for kw in ["hoàn tiền", "refund", "trả hàng", "refund policy", "flash sale", "license", "subscription"]
+    )
     exceptions_found = []
 
     # Exception 1: Flash Sale
-    if "flash sale" in task_lower or "flash sale" in context_text:
+    if is_refund_case and "flash sale" in combined_text:
         exceptions_found.append({
             "type": "flash_sale_exception",
             "rule": "Đơn hàng Flash Sale không được hoàn tiền (Điều 3, chính sách v4).",
@@ -92,7 +97,7 @@ def analyze_policy(task: str, chunks: list) -> dict:
         })
 
     # Exception 2: Digital product
-    if any(kw in task_lower for kw in ["license key", "license", "subscription", "kỹ thuật số"]):
+    if is_refund_case and any(kw in combined_text for kw in ["license key", "license", "subscription", "kỹ thuật số", "digital product"]):
         exceptions_found.append({
             "type": "digital_product_exception",
             "rule": "Sản phẩm kỹ thuật số (license key, subscription) không được hoàn tiền (Điều 3).",
@@ -100,7 +105,7 @@ def analyze_policy(task: str, chunks: list) -> dict:
         })
 
     # Exception 3: Activated product
-    if any(kw in task_lower for kw in ["đã kích hoạt", "đã đăng ký", "đã sử dụng"]):
+    if is_refund_case and any(kw in combined_text for kw in ["đã kích hoạt", "đã đăng ký", "đã sử dụng", "activated"]):
         exceptions_found.append({
             "type": "activated_exception",
             "rule": "Sản phẩm đã kích hoạt hoặc đăng ký tài khoản không được hoàn tiền (Điều 3).",
@@ -112,9 +117,10 @@ def analyze_policy(task: str, chunks: list) -> dict:
 
     # Determine which policy version applies (temporal scoping)
     # TODO: Check nếu đơn hàng trước 01/02/2026 → v3 applies (không có docs, nên flag cho synthesis)
-    policy_name = "refund_policy_v4"
+    is_access_case = any(kw in task_lower for kw in ["cấp quyền", "access", "level 3", "admin access", "emergency"])
+    policy_name = "access_control_sop" if is_access_case else "refund_policy_v4"
     policy_version_note = ""
-    if "31/01" in task_lower or "30/01" in task_lower or "trước 01/02" in task_lower:
+    if "31/01" in combined_text or "30/01" in combined_text or "trước 01/02" in combined_text:
         policy_version_note = "Đơn hàng đặt trước 01/02/2026 áp dụng chính sách v3 (không có trong tài liệu hiện tại)."
 
     # TODO Sprint 2: Gọi LLM để phân tích phức tạp hơn
@@ -198,10 +204,39 @@ def run(state: dict) -> dict:
             state["mcp_tools_used"].append(mcp_result)
             state["history"].append(f"[{WORKER_NAME}] called MCP get_ticket_info")
 
+        # Step 4: Access-control questions → gọi MCP check_access_permission
+        if needs_tool and any(kw in task.lower() for kw in ["cấp quyền", "access", "level", "admin"]):
+            inferred_level = 3 if "level 3" in task.lower() or "admin" in task.lower() else 2
+            inferred_emergency = "emergency" in task.lower() or "khẩn cấp" in task.lower()
+            access_result = _call_mcp_tool(
+                "check_access_permission",
+                {
+                    "access_level": inferred_level,
+                    "requester_role": "contractor" if "contractor" in task.lower() else "employee",
+                    "is_emergency": inferred_emergency,
+                },
+            )
+            state["mcp_tools_used"].append(access_result)
+            state["history"].append(f"[{WORKER_NAME}] called MCP check_access_permission")
+            tool_output = access_result.get("output") or {}
+            if tool_output and not tool_output.get("error"):
+                state["policy_result"]["access_decision"] = {
+                    "can_grant": tool_output.get("can_grant"),
+                    "required_approvers": tool_output.get("required_approvers", []),
+                    "emergency_override": tool_output.get("emergency_override", False),
+                    "notes": tool_output.get("notes", []),
+                }
+                source_list = state["policy_result"].get("source", [])
+                tool_source = tool_output.get("source")
+                if tool_source and tool_source not in source_list:
+                    source_list.append(tool_source)
+                state["policy_result"]["source"] = source_list
+
         worker_io["output"] = {
             "policy_applies": policy_result["policy_applies"],
             "exceptions_count": len(policy_result.get("exceptions_found", [])),
             "mcp_calls": len(state["mcp_tools_used"]),
+            "mcp_tools": [c.get("tool") for c in state["mcp_tools_used"]],
         }
         state["history"].append(
             f"[{WORKER_NAME}] policy_applies={policy_result['policy_applies']}, "

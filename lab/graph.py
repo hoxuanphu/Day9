@@ -42,6 +42,7 @@ class AgentState(TypedDict):
     final_answer: str                   # Câu trả lời tổng hợp
     sources: list                       # Sources được cite
     confidence: float                   # Mức độ tin cậy (0.0 - 1.0)
+    llm_provider: str                   # Provider/model synthesis đã dùng
 
     # Trace & history
     history: list                       # Lịch sử các bước đã qua
@@ -67,6 +68,7 @@ def make_initial_state(task: str) -> AgentState:
         "final_answer": "",
         "sources": [],
         "confidence": 0.0,
+        "llm_provider": "",
         "history": [],
         "workers_called": [],
         "supervisor_route": "",
@@ -125,6 +127,9 @@ def supervisor_node(state: AgentState) -> AgentState:
         risk_high = True
         if "risk_high flagged" not in route_reason:
             route_reason += " | risk_high flagged"
+
+    # Retrieval depth hint: câu khó/multi-hop nên lấy nhiều evidence hơn
+    state["retrieval_top_k"] = 4 if (needs_tool or risk_high) else 3
 
     state["supervisor_route"] = route
     state["route_reason"] = route_reason
@@ -222,10 +227,10 @@ def build_graph():
             # Sau khi human approve, mặc định route về retrieval
             state = retrieval_worker_node(state)
         elif route == "policy_tool_worker":
-            state = policy_tool_worker_node(state)
-            # Policy worker thường cần context từ retrieval
+            # Ưu tiên lấy evidence trước để policy phân tích grounded hơn
             if not state.get("retrieved_chunks"):
                 state = retrieval_worker_node(state)
+            state = policy_tool_worker_node(state)
         else:
             # Default: retrieval_worker
             state = retrieval_worker_node(state)
