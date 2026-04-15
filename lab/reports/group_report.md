@@ -9,7 +9,7 @@
 | Phạm Anh Quân | MCP Owner | hquan123cp04@gmail.com |
 | Phạm Anh Quân | Trace & Docs Owner | hquan123cp04@gmail.com |
 
-**Ngày nộp:** 15-04-2026  
+**Ngày nộp:** 14-04-2026  
 **Repo:** git@github.com:vinuni/day09-rag.git  
 **Độ dài khuyến nghị:** 600–1000 từ
 
